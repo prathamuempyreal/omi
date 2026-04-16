@@ -4,9 +4,8 @@ import 'package:go_router/go_router.dart';
 import 'package:intl/intl.dart';
 
 import '../../../core/widgets/glass_card.dart';
-import '../../../data/models/memory_record.dart';
+import '../../../data/models/api/omi_models.dart';
 import '../../memory/providers/memory_provider.dart';
-import '../../reminder/providers/reminder_provider.dart';
 
 class MemoryDetailScreen extends ConsumerStatefulWidget {
   const MemoryDetailScreen({super.key, required this.memoryId});
@@ -23,7 +22,7 @@ class _MemoryDetailScreenState extends ConsumerState<MemoryDetailScreen> {
   String _type = 'note';
   int _importance = 3;
   bool _loaded = false;
-  late final Future<MemoryRecord?> _memoryFuture;
+  late final Future<OmiMemory?> _memoryFuture;
 
   @override
   void initState() {
@@ -42,7 +41,7 @@ class _MemoryDetailScreenState extends ConsumerState<MemoryDetailScreen> {
 
   @override
   Widget build(BuildContext context) {
-    return FutureBuilder<MemoryRecord?>(
+    return FutureBuilder<OmiMemory?>(
       future: _memoryFuture,
       builder: (context, snapshot) {
         final memory = snapshot.data;
@@ -77,9 +76,6 @@ class _MemoryDetailScreenState extends ConsumerState<MemoryDetailScreen> {
                   await ref
                       .read(memoryProvider.notifier)
                       .deleteMemory(memory.id);
-                  await ref
-                      .read(reminderProvider.notifier)
-                      .deleteReminderForMemory(memory.id);
                   if (context.mounted) {
                     context.go('/memories');
                   }
@@ -114,7 +110,7 @@ class _MemoryDetailScreenState extends ConsumerState<MemoryDetailScreen> {
                     ),
                     const SizedBox(height: 14),
                     DropdownButtonFormField<String>(
-                      initialValue: _type,
+                      value: _type,
                       decoration: const InputDecoration(labelText: 'Type'),
                       items: const ['reminder', 'task', 'event', 'fact', 'note']
                           .map(
@@ -147,21 +143,20 @@ class _MemoryDetailScreenState extends ConsumerState<MemoryDetailScreen> {
                     const SizedBox(height: 10),
                     FilledButton(
                       onPressed: () async {
-                        final updated = memory.copyWith(
+                        final updated = OmiMemory(
+                          id: memory.id,
+                          type: _type,
                           content: _contentController.text.trim(),
                           datetimeRaw: _datetimeController.text.trim().isEmpty
                               ? null
                               : _datetimeController.text.trim(),
-                          type: _type,
                           importance: _importance,
+                          createdAt: memory.createdAt,
                         );
                         try {
                           await ref
                               .read(memoryProvider.notifier)
                               .updateMemory(updated);
-                          await ref
-                              .read(reminderProvider.notifier)
-                              .createOrUpdateReminderForMemory(updated);
                         } catch (_) {
                           if (context.mounted) {
                             ScaffoldMessenger.of(context).showSnackBar(

@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_dotenv/flutter_dotenv.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
@@ -12,6 +13,7 @@ import 'app.dart';
 import 'core/services/alarm_manager.dart';
 import 'core/services/alarm_service.dart';
 import 'core/services/notifications_services.dart';
+import 'core/services/omi/omi_api_service.dart';
 import 'features/settings/providers/settings_provider.dart';
 
 const MethodChannel _alarmPlatform = MethodChannel(
@@ -64,6 +66,14 @@ Future<void> _handleNotificationTap(NotificationResponse response) async {
 
   debugPrint('Notification tapped -> opening /alarm');
   _openAlarmRoute();
+  await Future.delayed(const Duration(milliseconds: 300));
+
+  try {
+    await _alarmPlatform.invokeMethod<void>('startAlarm');
+    debugPrint('Native alarm started');
+  } catch (e) {
+    debugPrint('Failed to start native alarm: $e');
+  }
 
   final pendingPayload = PendingNotification.instance.payload;
   debugPrint('Pending notification payload: $pendingPayload');
@@ -75,8 +85,29 @@ Future<void> main() async {
       WidgetsFlutterBinding.ensureInitialized();
 
       await dotenv.load(fileName: '.env');
+      debugPrint('OMI key: ${dotenv.env['OMI_API_KEY']}');
+
+      OmiApiService.instance.initialize();
 
       final preferences = await SharedPreferences.getInstance();
+
+      final userId = preferences.getString('logged_in_user_id');
+      final email = preferences.getString('logged_in_user_email');
+      debugPrint('main() startup - logged_in_user_id = $userId');
+      debugPrint('main() startup - logged_in_user_email = $email');
+
+      final hasValidSession = userId != null &&
+          userId.isNotEmpty &&
+          email != null &&
+          email.isNotEmpty;
+
+      if (!hasValidSession) {
+        debugPrint('No valid session found - clearing any stale session data');
+        await preferences.remove('logged_in_user_id');
+        await preferences.remove('logged_in_user_email');
+      } else {
+        debugPrint('Valid session found - user will remain logged in');
+      }
       
       await AlarmManager.instance.initialize();
       await NotificationService.instance.init();

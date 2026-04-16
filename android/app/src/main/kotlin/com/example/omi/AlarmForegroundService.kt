@@ -27,7 +27,7 @@ class AlarmForegroundService : Service() {
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        Log.d(TAG, "onStartCommand called with action: ${intent?.action}")
+        Log.d(TAG, "onStartCommand action = ${intent?.action}")
         when (intent?.action) {
             actionStart -> startAlarm()
             actionStop -> stopAlarm()

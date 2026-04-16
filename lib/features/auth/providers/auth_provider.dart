@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../data/local/app_database.dart';
@@ -53,10 +54,11 @@ class AuthController extends Notifier<AuthState> {
 
   Future<void> _checkExistingSession() async {
     try {
-      final sessionHelper = ref.read(sessionHelperProvider);
-      final isLoggedIn = await sessionHelper.isLoggedIn();
+      final isLoggedIn = await SessionHelper.isLoggedIn();
+      debugPrint('Session exists: $isLoggedIn');
 
       if (isLoggedIn) {
+        final sessionHelper = ref.read(sessionHelperProvider);
         final userId = await sessionHelper.getLoggedUserId();
         if (userId != null) {
           final database = ref.read(appDatabaseProvider);

@@ -1,7 +1,6 @@
 import 'dart:convert';
 import 'package:android_alarm_manager_plus/android_alarm_manager_plus.dart';
 import 'package:flutter/foundation.dart';
-import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:timezone/timezone.dart' as tz;
@@ -191,15 +190,6 @@ Future<void> _alarmCallback() async {
   try {
     debugPrint('ALARM CALLBACK: Initializing services...');
     await NotificationService.instance.init();
-    
-    debugPrint('ALARM CALLBACK: Starting alarm sound immediately...');
-    const platform = MethodChannel('com.example.omi/alarm_service');
-    try {
-      await platform.invokeMethod<void>('startAlarm');
-      debugPrint('ALARM CALLBACK: Alarm started successfully');
-    } catch (e) {
-      debugPrint('ALARM CALLBACK: Failed to start alarm: $e');
-    }
 
     final alarmData = await _loadAlarmData();
     await markPendingAlarmRoute();

@@ -8,6 +8,7 @@ import 'features/alarm/screens/alarm_screen.dart';
 import 'features/auth/providers/auth_provider.dart';
 import 'features/auth/screens/login_screen.dart';
 import 'features/auth/screens/signup_screen.dart';
+import 'features/auth/services/session_helper.dart';
 import 'features/settings/providers/settings_provider.dart';
 import 'features/ui/screens/home_screen.dart';
 import 'features/ui/screens/memory_detail_screen.dart';
@@ -16,6 +17,11 @@ import 'features/ui/screens/onboarding_screen.dart';
 import 'features/ui/screens/reminders_screen.dart';
 import 'features/ui/screens/settings_screen.dart';
 import 'features/ui/screens/sessions_screen.dart';
+import 'features/ui/screens/search_screen.dart';
+import 'features/ui/screens/daily_summary_screen.dart';
+import 'features/ui/screens/timeline_screen.dart';
+import 'features/ui/screens/reflection_screen.dart';
+import 'features/ui/screens/goal_tracking_screen.dart';
 
 final appNavigatorKey = GlobalKey<NavigatorState>();
 
@@ -82,6 +88,26 @@ final routerProvider = Provider<GoRouter>((ref) {
           GoRoute(
             path: '/settings',
             builder: (context, state) => const SettingsScreen(),
+          ),
+          GoRoute(
+            path: '/search',
+            builder: (context, state) => const SearchScreen(),
+          ),
+          GoRoute(
+            path: '/daily-summary',
+            builder: (context, state) => const DailySummaryScreen(),
+          ),
+          GoRoute(
+            path: '/timeline',
+            builder: (context, state) => const TimelineScreen(),
+          ),
+          GoRoute(
+            path: '/reflection',
+            builder: (context, state) => const ReflectionScreen(),
+          ),
+          GoRoute(
+            path: '/goals',
+            builder: (context, state) => const GoalTrackingScreen(),
           ),
         ],
       ),
@@ -250,7 +276,8 @@ class _LoadingScreenState extends ConsumerState<_LoadingScreen> {
       return;
     }
 
-    if (authState.isAuthenticated == true) {
+    debugPrint('Session exists: ${await SessionHelper.isLoggedIn()}');
+    if (await SessionHelper.isLoggedIn()) {
       context.go('/home');
     } else {
       context.go('/login');

@@ -1,63 +1,75 @@
+import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:uuid/uuid.dart';
 
-import '../../../data/local/app_database.dart';
-import '../../../data/models/session_record.dart';
+import '../../../core/providers/omi_realtime_provider.dart';
+import '../../../data/models/api/omi_models.dart';
 
 final sessionProvider = NotifierProvider<SessionController, SessionState>(
   SessionController.new,
 );
 
 class SessionState {
-  const SessionState({
-    required this.sessions,
-    required this.isLoading,
-    this.errorMessage,
-  });
-
-  factory SessionState.initial() =>
-      const SessionState(sessions: [], isLoading: false);
-
-  final List<SessionRecord> sessions;
+  final List<OmiConversation> sessions;
   final bool isLoading;
   final String? errorMessage;
+  final String? languageFilter;
+
+  const SessionState({
+    this.sessions = const [],
+    this.isLoading = false,
+    this.errorMessage,
+    this.languageFilter,
+  });
 
   SessionState copyWith({
-    List<SessionRecord>? sessions,
+    List<OmiConversation>? sessions,
     bool? isLoading,
     String? errorMessage,
+    String? languageFilter,
   }) {
     return SessionState(
       sessions: sessions ?? this.sessions,
       isLoading: isLoading ?? this.isLoading,
       errorMessage: errorMessage,
+      languageFilter: languageFilter ?? this.languageFilter,
     );
   }
 }
 
 class SessionController extends Notifier<SessionState> {
-  final _uuid = const Uuid();
   String? _currentSessionId;
 
   @override
   SessionState build() {
-    Future.microtask(loadSessions);
-    return SessionState.initial();
+    Future.microtask(loadConversations);
+    return const SessionState();
   }
 
   String? get currentSessionId => _currentSessionId;
 
-  Future<void> loadSessions() async {
-    state = state.copyWith(isLoading: true);
+  Future<void> loadConversations({String? languageFilter}) async {
+    state = state.copyWith(isLoading: true, languageFilter: languageFilter);
     try {
-      final sessions = await ref.read(appDatabaseProvider).getAllSessions();
-      sessions.sort((a, b) => b.startedAt.compareTo(a.startedAt));
+      await ref.read(omiRealtimeProvider.notifier).refreshConversations();
+      final omiState = ref.read(omiRealtimeProvider);
+      var conversations = List<OmiConversation>.from(omiState.conversations);
+      
+      if (languageFilter != null && languageFilter != 'all') {
+        conversations = conversations.where((c) => c.language == languageFilter).toList();
+      }
+      
+      conversations.sort((a, b) => b.createdAt.compareTo(a.createdAt));
+      
+      debugPrint('SessionsProvider: Loaded conversations: ${conversations.length}');
+      debugPrint('SessionsProvider: Language filter: ${languageFilter ?? "all"}');
+      
       state = state.copyWith(
-        sessions: sessions,
+        sessions: conversations,
         isLoading: false,
         errorMessage: null,
       );
-    } catch (_) {
+    } catch (e) {
+      debugPrint('SessionsProvider: Error loading conversations: $e');
       state = state.copyWith(
         isLoading: false,
         errorMessage: 'Sessions could not be loaded right now.',
@@ -65,20 +77,20 @@ class SessionController extends Notifier<SessionState> {
     }
   }
 
+  Future<void> loadSessions() async {
+    await loadConversations(languageFilter: state.languageFilter);
+  }
+
   Future<String> startSession() async {
-    final session = SessionRecord(
-      id: _uuid.v4(),
-      startedAt: DateTime.now(),
-      endedAt: null,
-      transcriptSnippet: null,
-      memoryCount: 0,
-      durationSeconds: null,
+    final conversation = OmiConversation(
+      id: DateTime.now().millisecondsSinceEpoch.toString(),
+      createdAt: DateTime.now(),
     );
-    _currentSessionId = session.id;
-    await ref.read(appDatabaseProvider).insertSession(session);
-    print('SESSION START: ${session.id}');
-    await loadSessions();
-    return session.id;
+    _currentSessionId = conversation.id;
+    state = state.copyWith(
+      sessions: [conversation, ...state.sessions],
+    );
+    return conversation.id;
   }
 
   Future<void> updateCurrentSession({
@@ -87,67 +99,46 @@ class SessionController extends Notifier<SessionState> {
   }) async {
     if (_currentSessionId == null) return;
 
-    try {
-      final database = ref.read(appDatabaseProvider);
-      final existing = await database.getSessionById(_currentSessionId!);
-      if (existing == null) return;
+    final index = state.sessions.indexWhere((s) => s.id == _currentSessionId);
+    if (index == -1) return;
 
-      String? newTranscript = existing.transcriptSnippet;
-      if (transcriptSnippet != null && transcriptSnippet.isNotEmpty) {
-        final combined = existing.transcriptSnippet == null
-            ? transcriptSnippet
-            : '${existing.transcriptSnippet} ${transcriptSnippet}';
-        newTranscript = combined.length > 500 
-            ? combined.substring(0, 500) 
-            : combined;
-      }
-
-      final updated = existing.copyWith(
-        transcriptSnippet: newTranscript,
-        memoryCount: memoryCount ?? existing.memoryCount,
-      );
-      await database.updateSession(updated);
-      await loadSessions();
-    } catch (e) {
-      print("Session update error: $e");
+    final existing = state.sessions[index];
+    String? newTranscript = existing.transcript;
+    if (transcriptSnippet != null && transcriptSnippet.isNotEmpty) {
+      final combined = existing.transcript == null
+          ? transcriptSnippet
+          : '${existing.transcript} ${transcriptSnippet}';
+      newTranscript = combined.length > 500 
+          ? combined.substring(0, 500) 
+          : combined;
     }
+
+    final updated = OmiConversation(
+      id: existing.id,
+      title: existing.title,
+      transcript: newTranscript,
+      summary: existing.summary,
+      createdAt: existing.createdAt,
+      updatedAt: DateTime.now(),
+      messages: existing.messages,
+      language: existing.language,
+      metadata: existing.metadata,
+    );
+
+    final newSessions = List<OmiConversation>.from(state.sessions);
+    newSessions[index] = updated;
+    state = state.copyWith(sessions: newSessions);
   }
 
   Future<void> appendTranscript(String transcript) async {
     if (_currentSessionId == null) return;
     if (transcript.trim().isEmpty) return;
 
-    final currentState = state;
-    final currentSession = currentState.sessions.firstWhere(
-      (s) => s.id == _currentSessionId,
-      orElse: () => throw Exception('No active session'),
-    );
-
-    final combined = currentSession.transcriptSnippet == null
-        ? transcript
-        : '${currentSession.transcriptSnippet} ${transcript}';
-
-    final snippet = combined.length > 500 
-        ? combined.substring(0, 500) 
-        : combined;
-
-    print('SESSION TRANSCRIPT: $snippet');
-    await updateCurrentSession(transcriptSnippet: snippet);
+    await updateCurrentSession(transcriptSnippet: transcript);
   }
 
   Future<void> incrementMemoryCount() async {
-    if (_currentSessionId == null) return;
-
-    final currentState = state;
-    final currentSession = currentState.sessions.firstWhere(
-      (s) => s.id == _currentSessionId,
-      orElse: () => throw Exception('No active session'),
-    );
-
-    print('SESSION MEMORY COUNT++ (${currentSession.memoryCount} -> ${currentSession.memoryCount + 1})');
-    await updateCurrentSession(
-      memoryCount: currentSession.memoryCount + 1,
-    );
+    // Memory count is managed through OmiRealtimeProvider
   }
 
   Future<void> endSession(
@@ -155,33 +146,32 @@ class SessionController extends Notifier<SessionState> {
     String? transcriptSnippet,
     int? memoryCount,
   }) async {
-    final database = ref.read(appDatabaseProvider);
-    final existing = await database.getSessionById(sessionId);
-    final endedAt = DateTime.now();
-    final durationSeconds = existing == null
-        ? 0
-        : endedAt.difference(existing.startedAt).inSeconds.clamp(0, 864000);
+    final index = state.sessions.indexWhere((s) => s.id == sessionId);
+    if (index == -1) return;
 
-    final transcript = transcriptSnippet?.trim().isEmpty ?? true
-        ? existing?.transcriptSnippet
-        : transcriptSnippet!.trim();
-
-    final finalMemoryCount = memoryCount ?? existing?.memoryCount ?? 0;
-
-    print('SESSION END: $sessionId (duration: ${durationSeconds}s, memories: $finalMemoryCount)');
-    
-    await database.endSession(
-      sessionId,
-      endedAt,
-      transcriptSnippet: transcript,
-      memoryCount: finalMemoryCount,
-      durationSeconds: durationSeconds,
+    final existing = state.sessions[index];
+    final updated = OmiConversation(
+      id: existing.id,
+      title: existing.title,
+      transcript: transcriptSnippet ?? existing.transcript,
+      summary: existing.summary,
+      createdAt: existing.createdAt,
+      updatedAt: DateTime.now(),
+      messages: existing.messages,
+      language: existing.language,
+      metadata: {
+        ...?existing.metadata,
+        'endedAt': DateTime.now().toIso8601String(),
+        'memoryCount': memoryCount ?? 0,
+      },
     );
+
+    final newSessions = List<OmiConversation>.from(state.sessions);
+    newSessions[index] = updated;
+    state = state.copyWith(sessions: newSessions);
 
     if (_currentSessionId == sessionId) {
       _currentSessionId = null;
     }
-
-    await loadSessions();
   }
 }

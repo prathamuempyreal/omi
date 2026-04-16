@@ -1,7 +1,9 @@
 import 'dart:async';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../../core/services/omi/omi_sync_service.dart';
 import '../../audio/providers/audio_provider.dart';
 import '../../memory/providers/memory_provider.dart';
 import '../../reminder/providers/reminder_provider.dart';
@@ -224,8 +226,17 @@ class TranscriptController extends Notifier<TranscriptState> {
       final sessionController = ref.read(sessionProvider.notifier);
       await sessionController.appendTranscript(normalized);
 
+      // Process transcript to create Conversation, Memory, and Action Items in Omi
+      final omiSyncService = ref.read(omiSyncServiceProvider);
+      final syncResult = await omiSyncService.processTranscript(normalized);
+      
+      debugPrint('Omi sync result - Conversation: ${syncResult.conversationId}, Memory: ${syncResult.memoryId}, Action Items: ${syncResult.actionItemIds.length}');
+
+      // Also create memory locally for display
       await ref.read(memoryProvider.notifier).processTranscript(normalized);
-      await ref.read(reminderProvider.notifier).syncForLatestMemories();
+      
+      // Refresh reminders to pick up any action items created by OmiSyncService
+      await ref.read(reminderProvider.notifier).loadReminders();
 
       await sessionController.incrementMemoryCount();
 

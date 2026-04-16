@@ -2,17 +2,14 @@ import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter/foundation.dart';
-import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:uuid/uuid.dart';
 
+import '../../../core/providers/omi_realtime_provider.dart';
 import '../../../core/services/alarm_service.dart';
 import '../../../core/services/notifications_services.dart';
-import '../../../core/utils/date_time_parser.dart';
-import '../../../data/local/app_database.dart';
-import '../../../data/models/memory_record.dart';
+import '../../../data/models/api/omi_models.dart';
 import '../../../data/models/reminder_record.dart';
-import '../../memory/providers/memory_provider.dart';
 import '../../settings/providers/settings_provider.dart';
 
 final reminderProvider = NotifierProvider<ReminderController, ReminderState>(
@@ -20,69 +17,74 @@ final reminderProvider = NotifierProvider<ReminderController, ReminderState>(
 );
 
 class ReminderState {
-  const ReminderState({
-    required this.reminders,
-    required this.isLoading,
-    this.errorMessage,
-  });
-
-  factory ReminderState.initial() =>
-      const ReminderState(reminders: [], isLoading: false);
-
-  final List<ReminderRecord> reminders;
+  final List<OmiActionItem> actionItems;
   final bool isLoading;
   final String? errorMessage;
+  final bool showCompleted;
+
+  const ReminderState({
+    this.actionItems = const [],
+    this.isLoading = false,
+    this.errorMessage,
+    this.showCompleted = false,
+  });
+
+  List<OmiActionItem> get reminders => actionItems;
 
   ReminderState copyWith({
-    List<ReminderRecord>? reminders,
+    List<OmiActionItem>? actionItems,
     bool? isLoading,
     String? errorMessage,
+    bool? showCompleted,
   }) {
     return ReminderState(
-      reminders: reminders ?? this.reminders,
+      actionItems: actionItems ?? this.actionItems,
       isLoading: isLoading ?? this.isLoading,
       errorMessage: errorMessage,
+      showCompleted: showCompleted ?? this.showCompleted,
     );
   }
 }
 
 class ReminderController extends Notifier<ReminderState> {
-  final _uuid = const Uuid();
-
   @override
   ReminderState build() {
-    StreamSubscription<NotificationResponse>? subscription;
-
-    Future.microtask(() async {
-      await loadReminders();
-      subscription = NotificationService.instance.responses.listen(
-        _handleNotificationResponse,
-      );
-    });
-
-    ref.onDispose(() {
-      subscription?.cancel();
-    });
-
-    return ReminderState.initial();
+    Future.microtask(() => loadReminders());
+    return const ReminderState();
   }
 
-  Future<void> loadReminders() async {
-    state = state.copyWith(isLoading: true);
+  Future<void> loadReminders({bool? showCompleted}) async {
+    state = state.copyWith(isLoading: true, showCompleted: showCompleted ?? state.showCompleted);
     try {
-      final reminders = await ref.read(appDatabaseProvider).getAllReminders();
-      final activeReminders = reminders
-          .where((r) => r.status != 'done')
-          .toList();
-      activeReminders.sort(
-        (a, b) => a.scheduledTime.compareTo(b.scheduledTime),
-      );
+      await ref.read(omiRealtimeProvider.notifier).refreshActionItems();
+      final omiState = ref.read(omiRealtimeProvider);
+      
+      var items = List<OmiActionItem>.from(omiState.actionItems);
+      
+      if (showCompleted != true) {
+        items = items.where((r) => !r.completed).toList();
+      }
+      
+      items.sort((a, b) {
+        if (a.dueDate == null && b.dueDate == null) return 0;
+        if (a.dueDate == null) return 1;
+        if (b.dueDate == null) return -1;
+        return a.dueDate!.compareTo(b.dueDate!);
+      });
+      
+      final pendingCount = items.where((r) => !r.completed).length;
+      final completedCount = items.where((r) => r.completed).length;
+      
+      debugPrint('ReminderProvider: Loaded action items: ${items.length}');
+      debugPrint('ReminderProvider: Pending: $pendingCount, Completed: $completedCount');
+      
       state = state.copyWith(
-        reminders: activeReminders,
+        actionItems: items,
         isLoading: false,
         errorMessage: null,
       );
-    } catch (_) {
+    } catch (e) {
+      debugPrint('ReminderProvider: Error loading reminders: $e');
       state = state.copyWith(
         isLoading: false,
         errorMessage: 'Reminders could not be loaded right now.',
@@ -90,182 +92,119 @@ class ReminderController extends Notifier<ReminderState> {
     }
   }
 
-  Future<void> syncForLatestMemories() async {
-    final memories = ref.read(memoryProvider).memories.take(6);
-    for (final memory in memories) {
-      await createOrUpdateReminderForMemory(memory);
-    }
-    await loadReminders();
-  }
-
-  Future<void> createOrUpdateReminderForMemory(MemoryRecord memory) async {
+  Future<void> createReminder(OmiActionItem item) async {
+    debugPrint('ReminderProvider: Creating reminder: ${item.title}');
     try {
-      final parsed = DateTimeParser.parse(memory.datetimeRaw);
-      if (parsed.scheduledAt == null) {
-        return;
-      }
-
-      final database = ref.read(appDatabaseProvider);
-      final existing = await database.getReminderByMemoryId(memory.id);
-      if (existing != null &&
-          existing.scheduledTime == parsed.scheduledAt &&
-          existing.status == (parsed.wasAdjusted ? 'adjusted' : 'pending')) {
-        return;
-      }
-      final reminder =
-          (existing ??
-                  ReminderRecord(
-                    id: _uuid.v4(),
-                    memoryId: memory.id,
-                    scheduledTime: parsed.scheduledAt!,
-                    status: parsed.wasAdjusted ? 'adjusted' : 'pending',
-                  ))
-              .copyWith(
-                scheduledTime: parsed.scheduledAt,
-                status: parsed.wasAdjusted ? 'adjusted' : 'pending',
-              );
-
-      if (existing == null) {
-        await database.insertReminder(reminder);
-      } else {
-        await database.updateReminder(reminder);
-      }
-
-      if (ref.read(settingsProvider).notificationsEnabled) {
-        await NotificationService.instance.scheduleReminder(
-          reminder,
-          memory.content,
-        );
-      } else {
-        await NotificationService.instance.cancelReminder(reminder.id);
-      }
-    } catch (_) {
-      state = state.copyWith(
-        errorMessage: 'Reminder scheduling failed safely.',
-      );
+      await ref.read(omiRealtimeProvider.notifier).createActionItem(item);
+      await loadReminders(showCompleted: state.showCompleted);
+    } catch (e) {
+      debugPrint('ReminderProvider: Error creating reminder: $e');
+      state = state.copyWith(errorMessage: 'Failed to create reminder.');
     }
   }
 
   Future<void> snoozeReminder(String reminderId, Duration duration) async {
     final reminder = _findReminder(reminderId);
-    if (reminder == null) {
-      return;
-    }
+    if (reminder == null) return;
+
+    debugPrint('ReminderProvider: Snoozing reminder $reminderId for ${duration.inMinutes} minutes');
 
     await AlarmService.stopAlarm();
 
-    final updated = reminder.copyWith(
-      scheduledTime: DateTime.now().add(duration),
-      status: 'snoozed',
+    final newDueDate = DateTime.now().add(duration);
+    await ref.read(omiRealtimeProvider.notifier).updateActionItem(
+      reminderId,
+      {'due_date': newDueDate.toIso8601String(), 'status': 'snoozed'},
     );
-
-    await ref.read(appDatabaseProvider).updateReminder(updated);
-    final memory = await ref
-        .read(appDatabaseProvider)
-        .getMemoryById(updated.memoryId);
-    if (memory != null && ref.read(settingsProvider).notificationsEnabled) {
-      await NotificationService.instance.scheduleReminder(
-        updated,
-        memory.content,
-      );
-    }
-    await loadReminders();
+    await loadReminders(showCompleted: state.showCompleted);
   }
 
   Future<void> markReminderDone(String reminderId) async {
     final reminder = _findReminder(reminderId);
-    if (reminder == null) {
-      return;
-    }
+    if (reminder == null) return;
+
+    debugPrint('ReminderProvider: Marking reminder done: ${reminder.title}');
 
     await AlarmService.stopAlarm();
 
-    await ref
-        .read(appDatabaseProvider)
-        .updateReminder(reminder.copyWith(status: 'done'));
-    await NotificationService.instance.cancelReminder(reminder.id);
-    await loadReminders();
+    try {
+      await ref.read(omiRealtimeProvider.notifier).completeActionItem(reminderId);
+      await NotificationService.instance.cancelReminder(reminderId);
+      await loadReminders(showCompleted: state.showCompleted);
+    } catch (e) {
+      debugPrint('ReminderProvider: Error completing reminder: $e');
+      state = state.copyWith(errorMessage: 'Failed to complete reminder.');
+    }
+  }
+
+  Future<void> markReminderPending(String reminderId) async {
+    final reminder = _findReminder(reminderId);
+    if (reminder == null) return;
+
+    debugPrint('ReminderProvider: Marking reminder pending: ${reminder.title}');
+
+    try {
+      await ref.read(omiRealtimeProvider.notifier).updateActionItem(
+        reminderId,
+        {'completed': false},
+      );
+      await loadReminders(showCompleted: state.showCompleted);
+    } catch (e) {
+      debugPrint('ReminderProvider: Error marking reminder pending: $e');
+      state = state.copyWith(errorMessage: 'Failed to update reminder.');
+    }
   }
 
   Future<void> deleteReminder(String reminderId) async {
     final reminder = _findReminder(reminderId);
     if (reminder != null) {
+      debugPrint('ReminderProvider: Deleting reminder: ${reminder.title}');
       await AlarmService.stopAlarm();
     }
-    await NotificationService.instance.cancelReminder(reminderId);
-    await loadReminders();
-  }
 
-  Future<void> deleteReminderForMemory(String memoryId) async {
-    final existing = await ref
-        .read(appDatabaseProvider)
-        .getReminderByMemoryId(memoryId);
-    if (existing != null) {
-      await NotificationService.instance.cancelReminder(existing.id);
+    try {
+      await ref.read(omiRealtimeProvider.notifier).deleteActionItem(reminderId);
+      await NotificationService.instance.cancelReminder(reminderId);
+      await loadReminders(showCompleted: state.showCompleted);
+    } catch (e) {
+      debugPrint('ReminderProvider: Error deleting reminder: $e');
+      state = state.copyWith(errorMessage: 'Failed to delete reminder.');
     }
-    await ref.read(appDatabaseProvider).deleteReminderByMemoryId(memoryId);
-    await loadReminders();
   }
 
   Future<void> refreshSchedulesForPreferences() async {
     final enabled = ref.read(settingsProvider).notificationsEnabled;
-    final reminders = await ref.read(appDatabaseProvider).getAllReminders();
+    final reminders = state.actionItems;
     for (final reminder in reminders) {
-      if (reminder.status == 'done') {
+      if (reminder.completed) {
         await NotificationService.instance.cancelReminder(reminder.id);
         continue;
       }
-
       if (!enabled) {
         await NotificationService.instance.cancelReminder(reminder.id);
         continue;
       }
-
-      final memory = await ref
-          .read(appDatabaseProvider)
-          .getMemoryById(reminder.memoryId);
-      if (memory != null) {
+      if (reminder.dueDate != null) {
+        final record = ReminderRecord(
+          id: reminder.id,
+          memoryId: reminder.conversationId ?? reminder.id,
+          scheduledTime: reminder.dueDate!,
+          status: reminder.completed ? 'done' : 'pending',
+        );
         await NotificationService.instance.scheduleReminder(
-          reminder,
-          memory.content,
+          record,
+          reminder.title,
         );
       }
     }
   }
 
-  ReminderRecord? _findReminder(String reminderId) {
-    for (final reminder in state.reminders) {
+  OmiActionItem? _findReminder(String reminderId) {
+    for (final reminder in state.actionItems) {
       if (reminder.id == reminderId) {
         return reminder;
       }
     }
     return null;
-  }
-
-  Future<void> _handleNotificationResponse(
-    NotificationResponse response,
-  ) async {
-    debugPrint('Notification tapped -> stopping alarm');
-    await AlarmService.stopAlarm();
-
-    if (response.payload == null || response.payload!.isEmpty) {
-      return;
-    }
-
-    try {
-      final payload = jsonDecode(response.payload!) as Map<String, dynamic>;
-      final reminderId = payload['reminderId']?.toString();
-      if (reminderId == null) {
-        return;
-      }
-
-      if (response.actionId == 'snooze_10') {
-        await snoozeReminder(reminderId, const Duration(minutes: 10));
-      }
-    } catch (_) {
-      state = state.copyWith(
-        errorMessage: 'A reminder action could not be completed.',
-      );
-    }
   }
 }

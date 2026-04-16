@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
 import '../../../core/widgets/glass_card.dart';
+import '../../../features/auth/services/session_helper.dart';
 import '../../settings/providers/settings_provider.dart';
 
 class OnboardingScreen extends ConsumerStatefulWidget {
@@ -247,7 +248,12 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> {
                                       .read(settingsProvider.notifier)
                                       .completeOnboarding();
                                   if (context.mounted) {
-                                    context.go('/home');
+                                    debugPrint('Session exists: ${await SessionHelper.isLoggedIn()}');
+                                    if (await SessionHelper.isLoggedIn()) {
+                                      context.go('/home');
+                                    } else {
+                                      context.go('/login');
+                                    }
                                   }
                                 },
                                 child: Text(

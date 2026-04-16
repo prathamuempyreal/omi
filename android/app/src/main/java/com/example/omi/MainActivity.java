@@ -1,6 +1,7 @@
 package com.example.omi;
 
 import android.content.Intent;
+import android.util.Log;
 
 import androidx.annotation.NonNull;
 import androidx.core.content.ContextCompat;
@@ -22,6 +23,7 @@ public class MainActivity extends FlutterActivity {
 
                     switch (call.method) {
                         case "startAlarm":
+                            Log.d("MainActivity", "Received startAlarm method call");
                             intent.setAction("START");
                             ContextCompat.startForegroundService(getApplicationContext(), intent);
                             result.success(null);
